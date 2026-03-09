@@ -1,0 +1,5 @@
+# Optional: for better object detection using CLIP (CPU-only).
+# Install after requirements.txt, then run: python -m scripts.build_object_index data --use-clip
+open-clip-torch>=2.24.0
+torch>=2.0.0
+pillow>=9.0.0

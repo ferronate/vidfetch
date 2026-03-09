@@ -1,0 +1,34 @@
+﻿# Dependencies and environments (large, not useful for AI context)
+node_modules/
+.venv/
+venv/
+env/
+.pixi/
+.pdm-python/
+
+# Build and cache
+.next/
+out/
+.turbo/
+build/
+dist/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.pyc
+*.tsbuildinfo
+next-env.d.ts
+
+# Cursor/IDE local state
+.cursor/
+
+# Vidfetch generated and downloaded assets
+index_store/
+models/*.caffemodel
+models/*.prototxt
+*.pt
+*.onnx
+
+# Optional: exclude video data from indexing (uncomment if data/ is large)
+# data/
