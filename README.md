@@ -137,7 +137,7 @@ Content-based video retrieval by **color** (HSV histograms) and **object**. **Re
 
 ---
 
-## Presentation tips
+## Tips
 
 - Use **5–10 short clips** in `data/` for fast indexing and queries.
 - Run **build_index** (and optionally **build_object_index**) once, then start the API and web UI to demo in the browser.
