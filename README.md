@@ -1,143 +1,442 @@
-# vidfetch — Lightweight Video Retrieval
+# vidfetch
 
-Content-based video retrieval by **color** (HSV histograms) and **object**. **Recommended:** YOLOv8 (real COCO detection). Alternatives: MobileNet-SSD or CLIP. CPU-only; no GPU required.
+Lightweight video object detection with comprehensive video-specific features and an intuitive web UI for search, detection, and correction workflows.
 
----
+## Features
 
-## Setup
+### Core Detection & Processing
+- ✅ **Automatic CPU Profiling** - Dynamically benchmarks your hardware and auto-selects the optimal thread counts, batch sizes, and model tier.
+- ✅ **Pluggable Detectors** - Supports wide-vocabulary YOLO (Object365/COCO) and ONNX models out of the box.
+- ✅ **CPU-Optimized** - Designed exclusively to run fast on CPUs without needing a dedicated GPU.
+- ✅ **Object Tracking** - Tracks objects across frames reliably using the SORT algorithm.
+- ✅ **Temporal Aggregation** - Votes across adjacent frames to drastically reduce detection flickering.
+- ✅ **Adaptive Sampling** - Automatically samples more frames during high-action motion and backs off during static scenes.
+- ✅ **Scene Change Detection** - Naturally handles video cuts and transitions without breaking tracking context.
 
-1. **Clone / enter project**
-   ```bash
-   cd vidfetch
-   ```
+### Search & Query
+- ✅ **Semantic Object Search** - Find objects by type with case-insensitive matching across all videos.
+- ✅ **Color-Based Filtering** - Filter videos by warm/cool/dominant color characteristics.
+- ✅ **Fast Index-Backed Queries** - Returns results in milliseconds using a persistent detection index.
+- ✅ **Detection Reuse** - Automatically reuses existing detections instead of re-running jobs on already-indexed videos.
 
-2. **Install Python dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. **Optional — object search** (pick one or both)
-   - **YOLO (recommended):** real object detection, COCO 80 classes (person, car, skateboard, etc.). Runs on CPU.
-     ```bash
-     pip install -r requirements-yolo.txt
-     ```
-   - **CLIP concepts (recommended with YOLO):** adds globe, fire, rain, lab, forest, snow, incense, papaya, etc. Install if you use `--add-clip-concepts` when building the object index.
-     ```bash
-     pip install -r requirements-clip.txt
-     ```
-   - **SSD (lightweight):** download detector once, then build with no extra deps. `python -m scripts.download_detector_model`
-
-4. **Add videos**
-   Put videos (e.g. `.mp4`, `.avi`, `.mov`) in `data/` (or another folder you’ll pass to the scripts).
+### Web UI & Workflows
+- ✅ **Modern UI** - Built with Next.js 16, Tailwind CSS v4, and shadcn/ui components.
+- ✅ **Video Gallery** - Browse, select, and manage videos with live detection status.
+- ✅ **Detection Control** - Run detection on a single video or batch-process all videos with live progress tracking.
+- ✅ **Review & Correction Tab** - Inspect detections frame-by-frame with per-class time-range summaries.
+- ✅ **Relabel / Delete** - Correct misclassified detections and delete false positives.
+- ✅ **Auto-Generated Rules** - Create reusable relabeling rules from corrections.
 
 ---
 
-## Run (step by step)
+## Quick Start
 
-1. **Build the color index** (required for search)
-   ```bash
-   python -m scripts.build_index data
-   ```
-   Output: `index_store/` (features + meta).
+### 1. Install dependencies
+```bash
+# Backend dependencies (we highly recommend using a virtual environment)
+python -m venv .venv
+.\.venv\Scripts\activate  # On Windows, or: source .venv/bin/activate (macOS/Linux)
 
-2. **Build the object index** (optional; enables object search and gallery in the UI)
-   - **Recommended (YOLO + CLIP concepts):** best coverage — COCO objects plus globe, fire, rain, lab, forest, snow, incense, surfboard, papaya, etc. Requires both `requirements-yolo.txt` and `requirements-clip.txt`.
-     ```bash
-     python -m scripts.build_object_index data --use-yolo --add-clip-concepts
-     ```
-   - YOLO only (no extra concepts):
-     ```bash
-     python -m scripts.build_object_index data --use-yolo
-     ```
-   - With SSD (after `download_detector_model`): `python -m scripts.build_object_index data`
-   - With CLIP only: `python -m scripts.build_object_index data --use-clip`  
-   Output: `index_store/objects.json`.
+pip install -r requirements.txt
+pip install python-multipart  # Required for FastAPI form endpoints
+```
 
-3. **Start the API** (from project root)
-   ```bash
-   python -m uvicorn api.main:app --reload --port 8000
-   ```
+### 2. Add videos to your library
+Place any `.mp4`, `.avi`, or `.mov` files into the `data/` directory.
+```bash
+cp /path/to/videos/*.mp4 data/
+```
 
-4. **Start the web UI** (separate terminal)
-   ```bash
-   cd web
-   npm install
-   npm run dev
-   ```
+### 3. Start the Backend API
+The backend automatically schedules background indexing for any new videos found in `data/` upon boot.
+```bash
+python -m uvicorn api.main:app --reload --port 8000
+```
 
-5. Open **http://localhost:3000**
-   - **Gallery:** indexed videos appear at the top (no titles); browse before searching.
-   - **Search:** type object terms (e.g. person, fire, surfboard) and press Enter or click Fetch videos; use the Filter panel for object types and color.
-   - **Results:** show video name and friendly match labels (Best match, Very similar, Similar, Related); optional timeline bar when an object is found in the video.
+### 4. Start the Frontend UI
+The modern Web UI runs on port 3000 and connects to the backend at `http://localhost:8000`.
+```bash
+cd web
+pnpm install  # or: npm install
+pnpm dev      # or: npm run dev
+```
+
+Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 ---
 
-## CLI (no UI)
+## Using the Web UI
 
-- **Query by video path**
-  ```bash
-  python -m scripts.query data/clip1.mp4 --k 5
-  ```
-- **Evaluation** (precision@k, recall@k, retrieval time)
-  ```bash
-  python -m scripts.run_evaluation --index-dir index_store --k 5
-  ```
+### Search for Objects
+1. Click the **Filter** button to open the filter panel.
+2. Select object types (e.g., "Person", "Car", "Building") and/or choose a color characteristic.
+3. Click **Apply Filters** to refine the search.
+4. Enter an object name in the search field (e.g., "person", "dog") and click **Fetch** to query.
+5. Results show matching video segments sorted by relevance.
 
----
+### Detect Objects in Videos
+1. Browse the **Gallery** section and check the video(s) you want to analyze.
+2. Click **Detect selected** to run detection on one video, or **Detect all** for batch processing.
+3. Monitor the progress bar as the backend indexes detections.
+4. Existing detections are automatically reused to avoid redundant re-processing.
 
-## Script options (reference)
-
-| Script | Main options |
-|--------|----------------|
-| `build_index` | `video_dir` (default `data`), `--index-dir`, `--fps`, `--max-frames` |
-| `build_object_index` | `video_dir`, `--use-yolo`, `--add-clip-concepts`, `--yolo-model` (s\|n), `--min-frames`, `--confidence`, `--index-dir`, `--fps`, `--max-frames` |
-| `query` | `query_video`, `--index-dir`, `--k` |
-| `run_evaluation` | `--index-dir`, `--k` |
-
----
-
-## Reducing false positives & filling COCO gaps
-
-1. **YOLO (defaults):** confidence `0.5`, **min 2 frames** per class, and a **blacklist** (toilet, sports ball, cake, sandwich, etc.) so common false positives are never tagged. Model is YOLOv8 **small** (`--yolo-model s`); use `--yolo-model n` for faster but less accurate. Use `--min-frames 3` for stricter.
-2. **Globe, fire, rain, lab, forest, snow, incense, papaya, etc.:** COCO doesn’t include these. Use **`--add-clip-concepts`** with `--use-yolo` (and `pip install -r requirements-clip.txt`). Concepts and synonyms are in `src/clip_detect.EXTRA_CONCEPTS` and `CONCEPT_TO_CANONICAL`.
-3. **Stricter thresholds**  
-   - **SSD:** default confidence is `0.6`. Rebuild with a higher value to be stricter:
-     ```bash
-     python -m scripts.build_object_index data --confidence 0.7
-     ```
-   - **CLIP:** default similarity threshold is `0.30`. Rebuild with a higher value:
-     ```bash
-     python -m scripts.build_object_index data --use-clip --clip-threshold 0.35
-     ```
-   Then rebuild the object index and restart the API so the UI uses the new index.
-
-4. **Reference: COCO and pretrained models**  
-   For stronger detection without training, use a model trained on **COCO** (Common Objects in Context), the standard benchmark for object detection:
-   - **Dataset:** [COCO](https://cocodataset.org/) — 80 classes including person, dog, car; models trained on COCO are typically more reliable than older Pascal VOC models.
-   - **Drop-in options (CPU, no training):** Pretrained COCO models in **ONNX** format run with ONNX Runtime on CPU. Examples: **YOLOX-Tiny** ([e.g. on Hugging Face](https://huggingface.co/cj-mills/yolox-coco-baseline-onnx)), **YOLOv3-Tiny**, or small **YOLOv8** exported to ONNX. You’d swap the detector in `src/detect.py` (or add a COCO/ONNX path) and map COCO class IDs to labels — no training, just a different pretrained model.
+### Review & Correct Detections
+1. In the **Gallery**, click the **Review** button on any video card.
+2. View **Object time ranges** at the top showing per-class temporal windows (e.g., "person: 0.4s-6.2s, 10.1s-12.5s").
+3. Scroll through the timeline to inspect each detection.
+4. Use **Relabel** to correct a mislabeled object, or **Delete** to remove false positives.
+5. Switch to the **Corrections** tab to view all changes made to this video.
+6. Use **Rules** tab to create reusable patterns (e.g., auto-relabel "dog" → "pet").
 
 ---
 
-## Project layout
+## Hardware-Aware Detection (Auto-Profiling)
 
-| Path | Role |
-|------|------|
-| `api/main.py` | FastAPI: list videos, run query, serve files |
-| `web/` | Next.js + shadcn UI |
-| `src/extract.py` | Frame sampling, HSV histograms, color presets |
-| `src/index.py` | Color index, L2 search |
-| `src/retrieval.py` | Load index, query helper |
-| `src/yolo_detect.py` | **YOLOv8 (COCO)** — recommended object detection |
-| `src/detect.py` | Object detection (OpenCV + MobileNet-SSD) |
-| `src/clip_detect.py` | Optional CLIP detection (CPU) |
-| `src/object_index.py` | Load/search object index, segments |
-| `scripts/build_index.py` | Build color index |
-| `scripts/build_object_index.py` | Build object index (`--use-yolo`, `--add-clip-concepts`, or SSD) |
-| `scripts/download_detector_model.py` | Download SSD model to `models/` |
+Vidfetch is built to run anywhere without configuration. When you start the system, `src/cpu_profile.py` probes your machine's capabilities (Core Count, AVX2, AVX-512 extensions) and automatically assigns you to a performance tier:
+
+- **High-Tier CPU** (8+ cores, AVX2/AVX-512): Sets batch size to 4, 640px input resolution, and uses the **Object365 model** (detects 365 unique object classes).
+- **Medium-Tier CPU** (4+ cores, SSE4): Sets batch size to 2, 480px input resolution, and uses the Object365 model.
+- **Low-Tier CPU** (< 4 cores): Sets batch size to 1, 320px input resolution, and falls back to a highly-quantized ONNX model or minimalist YOLOv8n.
 
 ---
 
-## Tips
+## CLI Usage
 
-- Use **5–10 short clips** in `data/` for fast indexing and queries.
-- Run **build_index** (and optionally **build_object_index**) once, then start the API and web UI to demo in the browser.
+If you want to use vidfetch headlessly without the web UI, use the CLI in the `scripts/` directory.
+
+### Detect objects in a specific video
+```bash
+python -m scripts.detect_objects data/video.mp4
+```
+
+### Batch process all videos in data/
+```bash
+python -m scripts.detect_objects --all
+```
+
+### Override the auto-detector
+```bash
+python -m scripts.detect_objects data/video.mp4 --detector onnx
+```
+
+### Adjust confidence threshold and save results
+```bash
+python -m scripts.detect_objects data/video.mp4 --confidence 0.15 --output results.json
+```
+
+---
+
+## API Endpoints
+
+The API is served at `http://localhost:8000` by default.
+
+### **Videos**
+
+#### `GET /api/videos`
+Lists all recognized video files in the `data/` directory.
+
+**Response:**
+```json
+[
+  {"id": "nature_walk.mp4", "name": "nature_walk.mp4"},
+  {"id": "city_street.mp4", "name": "city_street.mp4"}
+]
+```
+
+#### `GET /api/video/{video_id}`
+Streams a specific video file directly to the client.
+
+#### `GET /api/video/{video_id}/detections`
+Retrieves cached detection results for a video.
+
+**Response:**
+```json
+{
+  "video": "nature_walk.mp4",
+  "classes": ["person", "dog", "tree"],
+  "timeline": [
+    {
+      "t": 0.0,
+      "objects": [
+        {"class": "person", "confidence": 0.92, "bbox": [10, 20, 100, 150]},
+        {"class": "dog", "confidence": 0.87, "bbox": [120, 60, 200, 170]}
+      ]
+    }
+  ]
+}
+```
+
+### **Detection**
+
+#### `GET /api/objects`
+Returns a unified list of every unique object type detected across all indexed videos.
+
+**Response:**
+```json
+["person", "car", "dog", "building", "bicycle", "tree"]
+```
+
+#### `GET /api/detector-info`
+Returns machine hardware profile and active detector configuration.
+
+**Response:**
+```json
+{
+  "device": "CPU",
+  "cpu_model": "Intel Core i7-9700K",
+  "cores": 8,
+  "has_avx2": true,
+  "has_avx512": false,
+  "active_detector": "yolo_object365",
+  "batch_size": 4,
+  "input_resolution": 640
+}
+```
+
+#### `POST /api/detect`
+Trigger detection on a video. Returns immediately with a job reference or reuse status.
+
+**Payload:**
+```json
+{
+  "video_id": "nature_walk.mp4",
+  "detector_type": "auto"
+}
+```
+
+**Response (new job queued):**
+```json
+{
+  "success": true,
+  "reused": false,
+  "job_id": "abc123",
+  "status_url": "/api/detect/jobs/abc123"
+}
+```
+
+**Response (detection reused):**
+```json
+{
+  "success": true,
+  "reused": true,
+  "video_id": "nature_walk.mp4",
+  "message": "Using existing detection from index"
+}
+```
+
+#### `GET /api/detect/jobs`
+Lists all detection jobs (submitted, queued, running, completed, failed).
+
+**Response:**
+```json
+[
+  {"id": "abc123", "video_id": "nature_walk.mp4", "status": "running"},
+  {"id": "def456", "video_id": "city_street.mp4", "status": "done"}
+]
+```
+
+### **Search & Query**
+
+#### `POST /api/query`
+Search your video library by object types and color characteristics.
+
+**Payload:**
+```json
+{
+  "search_input": "person",
+  "object_types": ["person", "dog"],
+  "color_filter": "any",
+  "color_ref_video_id": "",
+  "k": 5
+}
+```
+
+**Response:**
+```json
+{
+  "query_object": "person",
+  "results": [
+    {
+      "id": "nature_walk.mp4",
+      "name": "nature_walk.mp4",
+      "distance": 0.12,
+      "object_segments": [
+        {"start": 0.0, "end": 6.5},
+        {"start": 10.1, "end": 15.3}
+      ]
+    }
+  ],
+  "time_ms": 48
+}
+```
+
+### **Corrections & Rules**
+
+#### `GET /api/corrections/{video_id}`
+Get all corrections made to detections in a specific video.
+
+#### `POST /api/corrections/{video_id}`
+Add a correction (relabel or delete) for a detection.
+
+**Payload:**
+```json
+{
+  "video_id": "nature_walk.mp4",
+  "frame_number": 5,
+  "original_class": "dog",
+  "corrected_class": "wolf",
+  "action": "relabel"
+}
+```
+
+#### `GET /api/rules`
+List all correction rules.
+
+#### `POST /api/rules`
+Create a new correction rule.
+
+**Payload:**
+```json
+{
+  "pattern_class": "dog",
+  "target_class": "pet",
+  "confidence_threshold": 0.75
+}
+```
+
+---
+
+## System Architecture
+
+```text
+┌─────────────────────────────────────────────┐
+│                 Frontend UI                  │
+│  (Next.js 16, Tailwind v4, shadcn/ui)       │
+│  • Search & Filter                          │
+│  • Video Gallery & Detection                │
+│  • Review & Correction Workflow             │
+└─────────────────────────────────────────────┘
+                      ↓
+┌─────────────────────────────────────────────┐
+│                   API Layer                  │
+│          (FastAPI - Port 8000)              │
+│  • /api/query (search)                      │
+│  • /api/detect (job submission)             │
+│  • /api/objects (catalog)                   │
+│  • /api/corrections (review workflow)       │
+└─────────────────────────────────────────────┘
+                      ↓
+┌─────────────────────────────────────────────┐
+│           Detection Index Cache             │
+│    (detection_results.json, thread-safe)    │
+│  • Per-video detection results              │
+│  • Timestamp & class metadata               │
+│  • Enables reuse & fast queries             │
+└─────────────────────────────────────────────┘
+                      ↓
+┌─────────────────────────────────────────────┐
+│              Hardware Profiler              │
+│  (Detects CPU tier & selects model/batch)   │
+└─────────────────────────────────────────────┘
+                      ↓
+┌─────────────────────────────────────────────┐
+│            Pluggable Detectors              │
+│  ┌────────────┐ ┌────────────┐ ┌─────────┐ │
+│  │ YOLO Ob365 │ │ YOLO COCO  │ │  ONNX   │ │
+│  │ (primary)  │ │ (fallback) │ │ (fast)  │ │
+│  └────────────┘ └────────────┘ └─────────┘ │
+└─────────────────────────────────────────────┘
+                      ↓
+┌─────────────────────────────────────────────┐
+│          Video Processing Pipeline          │
+│  ┌─────────┐ ┌────────────┐ ┌──────────┐   │
+│  │  Scene  │ │ Adaptive   │ │ Temporal │   │
+│  │ Change  │ │ Sampling   │ │Aggreg.  │   │
+│  └─────────┘ └────────────┘ └──────────┘   │
+└─────────────────────────────────────────────┘
+```
+
+---
+
+## Project Directory Structure
+
+```text
+vidfetch/
+├── api/
+│   └── main.py                  # FastAPI backend & routes
+├── data/                        # Your video files (mp4, avi, mov)
+├── index_store/
+│   └── detection_results.json   # Persistent detection index cache
+├── models/                      # Pre-downloaded neural network weights
+├── scripts/
+│   ├── benchmark_cpu.py         # Test CPU inference speeds
+│   ├── detect_objects.py        # Headless CLI detection tool
+│   └── download_model.py        # Model fetcher utility
+├── src/
+│   ├── config.py                # Environment & runtime settings
+│   ├── cpu_profile.py           # Hardware detection & tiering logic
+│   ├── utils.py                 # Geometry (IoU), NMS, path utilities
+│   ├── detector.py              # Core VideoDetector orchestrator
+│   ├── video_catalog.py         # Video library management
+│   ├── inference_worker.py      # Background job processing
+│   ├── inference/
+│   │   └── service.py           # Inference service & job queue
+│   └── detectors/
+│       ├── base.py              # Abstract detector interface
+│       ├── manager.py           # Detector selection logic
+│       ├── onnx_detector.py     # CPU-optimized ONNX runtime
+│       ├── yolo.py              # Ultralytics YOLOv8 integration
+│       ├── tracking.py          # SORT object tracking algorithm
+│       └── motion.py            # Scene change & motion detection
+└── web/                         # Next.js web application
+    ├── app/                     # App routes & layout
+    ├── components/
+    │   ├── search/              # Search & filter components
+    │   ├── ui/                  # shadcn/ui components
+    │   ├── video-gallery.tsx    # Video gallery & review modal
+    │   ├── correction-review.tsx # Review & correction tab
+    │   └── result-card.tsx      # Search result cards
+    ├── hooks/                   # React hooks (useVideoSearch, useCorrectionData)
+    ├── lib/                     # API client & type definitions
+    └── public/                  # Static assets
+```
+
+---
+
+## Known Limitations & Future Improvements
+
+- **Multi-GPU support**: Currently CPU-only; GPU support can be added via `torch.device` routing.
+- **Streaming detection**: Large videos are processed end-to-end; windowed/streaming processing could reduce memory footprint.
+- **Custom models**: Fine-tuning workflows are not yet built in; users can swap detector implementations.
+- **Timeline scrolling**: Scrollable detection timeline added; infinite scroll in compact mode can be tuned.
+- **Popover transparency**: Popover styling can be customized further (planned for later).
+
+---
+
+## Development Notes
+
+### Running Frontend Build
+```bash
+cd web
+pnpm build      # Production build
+pnpm run dev    # Hot-reload dev server
+pnpm run lint   # ESLint check
+```
+
+### Running Backend Tests (if available)
+```bash
+pytest tests/
+```
+
+### Environment Variables
+Create a `.env` file in the project root if needed:
+```env
+API_BASE=http://localhost:8000
+NEXT_PUBLIC_API_BASE=http://localhost:8000
+```
+
+---
+
+## License
+
+Vidfetch is provided as-is for research, evaluation, and personal use.

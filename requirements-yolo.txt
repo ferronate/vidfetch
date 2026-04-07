@@ -1,3 +1,0 @@
-# Optional: real object detection (YOLOv8, COCO). Recommended for reliable results.
-# Install after requirements.txt, then run: python -m scripts.build_object_index data --use-yolo
-ultralytics>=8.0.0

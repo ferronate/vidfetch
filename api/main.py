@@ -1,174 +1,539 @@
 """
-FastAPI backend for vidfetch: list indexed videos, run query, serve video files.
+FastAPI backend for vidfetch: serve videos, auto-index, and run queries.
 Run: python -m uvicorn api.main:app --reload --port 8000
 """
 import time
-from pathlib import Path
-import sys
-import tempfile
+import os
+import asyncio
+from typing import List, Optional
 
-from fastapi import FastAPI, File, Form, UploadFile, HTTPException
+from fastapi import FastAPI, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+# Local imports — no sys.path hacks needed when running via ``python -m``
+from src.video_catalog import get_video_files_cached, find_video_by_id
+from src.inference import service as inference_service
 
-from src.index import VideoIndex
-from src.object_index import load_object_index, search_by_object, get_object_segments, _get_classes_for_video
-from src.retrieval import load_index
-from src.extract import video_to_feature, get_preset_color_feature
-
-INDEX_DIR = ROOT / "index_store"
-
-# Object labels for dropdown (Pascal VOC, skip background)
-OBJECT_LABELS = [
-    "aeroplane", "bicycle", "bird", "boat", "bottle", "bus", "car", "cat",
-    "chair", "cow", "dining table", "dog", "horse", "motorbike", "person",
-    "potted plant", "sheep", "sofa", "train", "tv monitor",
-]
+DOMAIN_PROMPT_PRESETS = {
+    "nature": (
+        "tree, forest, mountain, hill, river, waterfall, lake, ocean, beach, sky, cloud, "
+        "flower, grass, field, rock, snow, bird, fish, deer, bear"
+    ),
+    "food": (
+        "food, meal, fruit, vegetable, plate, bowl, sandwich, pizza, burger, sushi, "
+        "salad, bread, drink, cup, bottle"
+    ),
+    "nature-food": (
+        "tree, forest, mountain, hill, river, waterfall, lake, ocean, beach, sky, cloud, "
+        "flower, grass, field, rock, snow, bird, fish, deer, bear, "
+        "food, meal, fruit, vegetable, plate, bowl, sandwich, pizza, burger, sushi, "
+        "salad, bread, drink, cup, bottle"
+    ),
+}
 
 app = FastAPI(title="Vidfetch API")
+
+# --- CORS (fixed: the old code produced a list-inside-a-list) ---
+_origins_env = os.environ.get(
+    "VF_CORS_ORIGINS",
+    "http://localhost:3000,http://127.0.0.1:3000",
+)
+_allowed_origins = [o.strip() for o in _origins_env.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-_index: VideoIndex | None = None
+
+# ---------------------------------------------------------------------------
+# Index helpers (delegate to inference.service for writes)
+# ---------------------------------------------------------------------------
+
+def _load_index() -> dict:
+    """Load detection results from the shared index file."""
+    return inference_service.load_index_snapshot()
 
 
-def get_index() -> VideoIndex:
-    global _index
-    if _index is None:
-        if not (INDEX_DIR / "features.npy").exists():
-            raise HTTPException(503, "Index not built. Run: python -m scripts.build_index data")
-        _index = load_index(INDEX_DIR)
-    return _index
+def _save_index(data: dict):
+    """Save detection results (used only by reindex to clear the file)."""
+    inference_service.overwrite_index(data)
 
 
-def _get_available_object_labels() -> list[str]:
-    """Labels for filter dropdown: from object index if present, else Pascal VOC."""
-    obj_index = load_object_index(INDEX_DIR)
-    if not obj_index:
-        return OBJECT_LABELS
-    seen = set(OBJECT_LABELS)
-    for entry in obj_index.values():
-        for c in _get_classes_for_video(entry):
-            seen.add(c)
-    return sorted(seen)
+# ---------------------------------------------------------------------------
+# Auto-indexing
+# ---------------------------------------------------------------------------
+
+def _submit_detection_job(
+    video_path,
+    detector_type: str = "auto",
+    confidence: float = 0.10,
+    sample_fps: float = 0.5,
+    prompt: Optional[str] = None,
+    save_to_index: bool = True,
+    batch_size: int = 1,
+) -> str:
+    return inference_service.submit_job(
+        str(video_path),
+        detector_type=detector_type,
+        confidence=confidence,
+        sample_fps=sample_fps,
+        prompt=prompt,
+        enable_tracking=True,
+        enable_adaptive_sampling=True,
+        enable_temporal_aggregation=True,
+        batch_size=batch_size,
+        save_to_index=save_to_index,
+    )
 
 
-@app.get("/api/objects")
-def list_objects():
-    """List object labels for search/filter dropdown (from index or Pascal VOC)."""
-    return {"objects": _get_available_object_labels()}
+def auto_index_videos() -> list[str]:
+    """Schedule indexing jobs for videos not yet in the index."""
+    index = _load_index()
+    videos = get_video_files_cached()
 
+    job_ids = []
+    for video_path in videos:
+        video_id = video_path.stem
+        if video_id in index:
+            continue
+        print(f"Scheduling indexing for {video_path.name}...")
+        job_id = _submit_detection_job(video_path=video_path, save_to_index=True)
+        job_ids.append(job_id)
+
+    print(f"Scheduled {len(job_ids)} indexing jobs")
+    return job_ids
+
+
+# ---------------------------------------------------------------------------
+# Events
+# ---------------------------------------------------------------------------
+
+@app.on_event("startup")
+async def startup_event():
+    """Schedule auto-indexing on startup (non-blocking)."""
+    print("Scheduling auto-indexing in background...")
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, auto_index_videos)
+    loop.run_in_executor(None, inference_service.init_pool)
+    loop.run_in_executor(None, lambda: inference_service.warm_workers(timeout=10.0))
+    print("Auto-indexing scheduled; inference workers warming in background")
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
 
 @app.get("/api/videos")
 def list_videos():
-    """List all indexed videos (id, name for display)."""
-    idx = get_index()
-    return {
-        "videos": [
-            {"id": vid_id, "name": Path(p).name}
-            for vid_id, p in zip(idx.ids, idx.paths)
-        ]
-    }
+    """List all videos in data directory."""
+    videos = get_video_files_cached()
+    return {"videos": [{"id": f.stem, "name": f.name} for f in videos]}
 
 
 @app.get("/api/video/{video_id}")
 def serve_video(video_id: str):
-    """Serve a video file by ID (path is the stored path; we resolve to file)."""
-    idx = get_index()
-    try:
-        i = idx.ids.index(video_id)
-    except ValueError:
+    """Serve a video file by ID."""
+    video_path = find_video_by_id(video_id)
+    if not video_path:
         raise HTTPException(404, "Video not found")
-    path = Path(idx.paths[i])
-    if not path.exists():
-        raise HTTPException(404, "Video file not found on disk")
-    return FileResponse(path, media_type="video/mp4")
+    return FileResponse(video_path, media_type="video/mp4")
+
+
+@app.get("/api/objects")
+def list_objects():
+    """List detected objects from saved results."""
+    index = _load_index()
+    all_objects = set()
+    for video_data in index.values():
+        if isinstance(video_data, dict):
+            all_objects.update(video_data.get("classes", []))
+    return {"objects": sorted(all_objects)}
+
+
+@app.get("/api/detector-info")
+def get_detector_info():
+    """Get information about the current detector."""
+    try:
+        from src.detector import VideoDetector
+
+        detector = VideoDetector()
+        return detector.get_detector_info()
+    except Exception as e:
+        raise HTTPException(500, f"Failed to get detector info: {e}")
 
 
 @app.post("/api/query")
-async def run_query(
-    video_id: str | None = Form(None),
-    file: UploadFile | None = File(None),
-    object_types: list[str] | None = Form(None),
-    color_filter: str | None = Form(None),
+async def query_videos(
+    object_types: Optional[List[str]] = Form(None),
+    color_filter: str = Form("any"),
     k: int = Form(5),
 ):
-    """
-    Run retrieval: object_types (videos containing any of these), color_filter (sort by color).
-    If object_types empty, all videos. color_filter: "any" | "warm" | "cool" | "bright" | "dark" | video_id.
-    """
+    """Query videos by object types."""
     t0 = time.perf_counter()
-    idx = get_index()
-    object_index = load_object_index(INDEX_DIR)
+    index = _load_index()
 
-    types_to_use = [t.strip() for t in (object_types or []) if t and t.strip()]
+    types_list: List[str] = []
+    if object_types:
+        # Accept both repeated form fields and comma-separated values.
+        for raw_value in object_types:
+            for item in raw_value.split(","):
+                value = item.strip()
+                if value:
+                    types_list.append(value)
 
-    candidate_ids = set(idx.ids)
-    if types_to_use:
-        by_object = set()
-        for obj in types_to_use:
-            by_object.update(search_by_object(object_index, obj))
-        if not by_object and object_index:
-            return {"results": [], "time_ms": round((time.perf_counter() - t0) * 1000, 2), "query_object": types_to_use[0] if types_to_use else None}
-        if by_object:
-            candidate_ids = by_object
+    normalized_types = [t.lower() for t in types_list]
 
-    query_path: Path | None = None
-    is_temp = False
-    if video_id:
-        try:
-            i = idx.ids.index(video_id)
-            query_path = Path(idx.paths[i])
-        except ValueError:
-            pass
-    if query_path is None and file and file.filename:
-        suffix = Path(file.filename).suffix or ".mp4"
-        fd, path = tempfile.mkstemp(suffix=suffix)
-        with open(fd, "wb") as f:
-            f.write(await file.read())
-        query_path = Path(path)
-        is_temp = True
+    matching_videos = []
+    for video_id, video_data in index.items():
+        if not isinstance(video_data, dict):
+            continue
 
-    if not candidate_ids:
-        return {"results": [], "time_ms": round((time.perf_counter() - t0) * 1000, 2), "query_object": types_to_use[0] if types_to_use else None}
+        video_classes = set(video_data.get("classes", []))
+        normalized_video_classes = {str(c).lower() for c in video_classes}
+        if normalized_types and not any(obj in normalized_video_classes for obj in normalized_types):
+            continue
 
-    ref_feature = None
-    if query_path is not None:
-        ref_feature = video_to_feature(query_path)
-    elif color_filter and color_filter.strip().lower() != "any":
-        cf = color_filter.strip().lower()
-        if cf in ("warm", "cool", "bright", "dark"):
-            ref_feature = get_preset_color_feature(cf)
-        else:
-            ref_feature = idx.get_feature(cf)
-    if ref_feature is None:
-        ref_feature = get_preset_color_feature("bright")
+        query_object = types_list[0] if types_list else None
+        query_object_normalized = normalized_types[0] if normalized_types else None
+        segments = []
+        if query_object_normalized:
+            for entry in video_data.get("timeline", []):
+                objects_in_frame = [str(d["class"]).lower() for d in entry.get("objects", []) if "class" in d]
+                if query_object_normalized in objects_in_frame:
+                    segments.append({"start": entry["t"], "end": entry["t"] + 0.5})
 
+        video_name = f"{video_id}.mp4"
+        vpath = find_video_by_id(video_id)
+        if vpath:
+            video_name = vpath.name
+
+        matching_videos.append(
+            {
+                "id": video_id,
+                "name": video_name,
+                "distance": 0.1,
+                "object_segments": segments,
+            }
+        )
+
+    matching_videos = matching_videos[:k]
+    elapsed = time.perf_counter() - t0
+
+    return {
+        "results": matching_videos,
+        "time_ms": round(elapsed * 1000, 2),
+        "query_object": types_list[0] if types_list else None,
+    }
+
+
+@app.post("/api/detect")
+async def run_detection(
+    video_id: str,
+    detector_type: str = Form("auto"),
+    model: str = Form("auto"),
+    oiv7: bool = Form(False),
+    domain: str = Form("none"),
+    prompt: Optional[str] = Form(None),
+):
+    """Run object detection on a specific video."""
+    video_path = find_video_by_id(video_id)
+    if not video_path:
+        raise HTTPException(404, "Video not found")
+
+    existing = _load_index().get(video_id)
+    if isinstance(existing, dict):
+        has_error = bool(existing.get("error"))
+        has_timeline = isinstance(existing.get("timeline"), list) and len(existing.get("timeline", [])) > 0
+        has_classes = isinstance(existing.get("classes"), list) and len(existing.get("classes", [])) > 0
+        if not has_error and (has_timeline or has_classes):
+            return {
+                "success": True,
+                "reused": True,
+                "video_id": video_id,
+                "message": "Reused existing indexed detections",
+            }
+
+    batch_size = int(os.environ.get("VF_BATCH_SIZE", "4"))
+    from src.cpu_profile import get_cpu_profile
+    profile = get_cpu_profile()
+    effective_prompt = prompt
+    if not effective_prompt and domain in DOMAIN_PROMPT_PRESETS:
+        effective_prompt = DOMAIN_PROMPT_PRESETS[domain]
+
+    effective_detector_type = detector_type
+    if domain in DOMAIN_PROMPT_PRESETS and detector_type == "auto":
+        effective_detector_type = "yolo-world"
+
+    job_id = _submit_detection_job(
+        video_path=video_path,
+        detector_type=effective_detector_type,
+        confidence=0.15,
+        sample_fps=profile.sample_fps,
+        prompt=effective_prompt,
+        save_to_index=True,
+        batch_size=batch_size,
+    )
+
+    return {
+        "success": True,
+        "reused": False,
+        "job_id": job_id,
+        "status_url": f"/api/detect/status/{job_id}",
+        "result_url": f"/api/detect/result/{job_id}",
+    }
+
+
+@app.get("/api/detect/status/{job_id}")
+def get_detect_status(job_id: str):
+    """Get detection job status."""
+    job = inference_service.get_job(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    return job
+
+
+@app.get("/api/detect/result/{job_id}")
+def get_detect_result(job_id: str):
+    """Get detection job result."""
+    result = inference_service.get_job_result(job_id)
+    if not result:
+        raise HTTPException(404, "Job result not found")
+    return result
+
+
+@app.get("/api/detect/jobs")
+def list_detect_jobs():
+    """List all detection jobs."""
+    return {"jobs": inference_service.list_jobs()}
+
+
+# ---------------------------------------------------------------------------
+# Correction endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/corrections/summary")
+def get_corrections_summary():
+    """Get correction system summary."""
     try:
-        results = idx.search_among(ref_feature, candidate_ids, k=k)
-        elapsed = time.perf_counter() - t0
-        query_object = types_to_use[0] if types_to_use else None
-        out_results = []
-        for r in results:
-            vid_id, path, dist = r[0], r[1], r[2]
-            item = {"id": vid_id, "name": Path(path).name, "distance": round(dist, 6)}
-            if query_object:
-                segments = get_object_segments(object_index, vid_id, query_object, frame_interval=0.5)
-                item["object_segments"] = segments
-            out_results.append(item)
+        from src.correction_applier import get_correction_summary
+        return get_correction_summary()
+    except Exception as e:
+        raise HTTPException(500, f"Failed to get corrections summary: {e}")
+
+
+@app.get("/api/corrections")
+def list_corrections(
+    video_id: Optional[str] = None,
+    class_name: Optional[str] = None,
+    limit: int = 100,
+):
+    """List corrections with optional filters."""
+    try:
+        from src.corrections import get_store
+        store = get_store()
+        corrections = store.get_corrections(
+            video_id=video_id,
+            original_class=class_name,
+            limit=limit,
+        )
         return {
-            "results": out_results,
-            "time_ms": round(elapsed * 1000, 2),
-            "query_object": query_object,
+            "corrections": [
+                {
+                    "id": c.id,
+                    "video_id": c.video_id,
+                    "frame_number": c.frame_number,
+                    "timestamp": c.timestamp,
+                    "original_class": c.original_class,
+                    "corrected_class": c.corrected_class,
+                    "bbox": c.bbox,
+                    "original_confidence": c.original_confidence,
+                    "action": c.action,
+                    "notes": c.notes,
+                }
+                for c in corrections
+            ]
         }
-    finally:
-        if is_temp and query_path and query_path.exists():
-            query_path.unlink(missing_ok=True)
+    except Exception as e:
+        raise HTTPException(500, f"Failed to list corrections: {e}")
+
+
+@app.post("/api/corrections")
+async def add_correction(
+    video_id: str = Form(...),
+    frame_number: int = Form(...),
+    timestamp: float = Form(0.0),
+    original_class: str = Form(...),
+    corrected_class: str = Form(...),
+    bbox: Optional[str] = Form(None),
+    original_confidence: float = Form(0.0),
+    action: str = Form("relabel"),
+    notes: str = Form(""),
+):
+    """Add a user correction."""
+    try:
+        from src.corrections import Correction, get_store
+        import json
+
+        store = get_store()
+        correction = Correction(
+            video_id=video_id,
+            frame_number=frame_number,
+            timestamp=timestamp,
+            original_class=original_class,
+            corrected_class=corrected_class,
+            bbox=json.loads(bbox) if bbox else None,
+            original_confidence=original_confidence,
+            action=action,
+            notes=notes,
+        )
+        correction_id = store.add_correction(correction)
+        return {"success": True, "id": correction_id}
+    except Exception as e:
+        raise HTTPException(500, f"Failed to add correction: {e}")
+
+
+@app.delete("/api/corrections/{correction_id}")
+def delete_correction(correction_id: int):
+    """Delete a correction."""
+    try:
+        from src.corrections import get_store
+        store = get_store()
+        store.delete_correction(correction_id)
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(500, f"Failed to delete correction: {e}")
+
+
+@app.get("/api/corrections/rules")
+def list_rules(enabled_only: bool = True):
+    """List correction rules."""
+    try:
+        from src.corrections import get_store
+        store = get_store()
+        rules = store.get_rules(enabled_only=enabled_only)
+        return {
+            "rules": [
+                {
+                    "id": r.id,
+                    "pattern_class": r.pattern_class,
+                    "target_class": r.target_class,
+                    "confidence_threshold": r.confidence_threshold,
+                    "video_pattern": r.video_pattern,
+                    "enabled": r.enabled,
+                    "usage_count": r.usage_count,
+                }
+                for r in rules
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(500, f"Failed to list rules: {e}")
+
+
+@app.post("/api/corrections/rules")
+async def add_rule(
+    pattern_class: str = Form(...),
+    target_class: str = Form(...),
+    confidence_threshold: Optional[float] = Form(None),
+    video_pattern: Optional[str] = Form(None),
+):
+    """Add a correction rule."""
+    try:
+        from src.corrections import CorrectionRule, get_store
+        store = get_store()
+        rule = CorrectionRule(
+            pattern_class=pattern_class,
+            target_class=target_class,
+            confidence_threshold=confidence_threshold,
+            video_pattern=video_pattern,
+        )
+        rule_id = store.add_rule(rule)
+        return {"success": True, "id": rule_id}
+    except Exception as e:
+        raise HTTPException(500, f"Failed to add rule: {e}")
+
+
+@app.post("/api/corrections/rules/{rule_id}/toggle")
+def toggle_rule(rule_id: int, disable: bool = Form(False)):
+    """Toggle a rule on/off."""
+    try:
+        from src.corrections import get_store
+        store = get_store()
+        store.toggle_rule(rule_id, not disable)
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(500, f"Failed to toggle rule: {e}")
+
+
+@app.delete("/api/corrections/rules/{rule_id}")
+def delete_rule(rule_id: int):
+    """Delete a rule."""
+    try:
+        from src.corrections import get_store
+        store = get_store()
+        store.delete_rule(rule_id)
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(500, f"Failed to delete rule: {e}")
+
+
+@app.post("/api/corrections/generate-rules")
+def generate_rules(min_occurrences: int = Form(3)):
+    """Auto-generate rules from repeated corrections."""
+    try:
+        from src.corrections import get_store
+        store = get_store()
+        count = store.generate_rules_from_corrections(min_occurrences=min_occurrences)
+        return {"success": True, "rules_generated": count}
+    except Exception as e:
+        raise HTTPException(500, f"Failed to generate rules: {e}")
+
+
+@app.get("/api/video/{video_id}/detections")
+def get_video_detections(video_id: str):
+    """Get detection results for a specific video."""
+    index = _load_index()
+    video_data = index.get(video_id)
+    if not video_data:
+        raise HTTPException(404, "Video not found in index")
+    return video_data
+def detect_status(job_id: str):
+    """Get status for a submitted detection job."""
+    job = inference_service.get_job(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    return job
+
+
+@app.get("/api/detect/result/{job_id}")
+def detect_result(job_id: str):
+    """Return detection result if ready, otherwise a 202 status with progress."""
+    job = inference_service.get_job(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+
+    status = job.get("status")
+    if status == "done":
+        return {"success": True, "result": job.get("result")}
+    elif status == "failed":
+        raise HTTPException(500, f"Job failed: {job.get('error')}")
+    return {"success": False, "status": status}
+
+
+@app.post("/api/reindex")
+async def reindex_all(detector_type: str = Form("auto")):
+    """Re-index all videos."""
+    t0 = time.perf_counter()
+    _save_index({})
+    job_ids = auto_index_videos()
+    elapsed = time.perf_counter() - t0
+
+    return {
+        "success": True,
+        "time_ms": round(elapsed * 1000, 2),
+        "jobs_submitted": len(job_ids),
+    }
