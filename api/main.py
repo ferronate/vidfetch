@@ -5,7 +5,7 @@ Run: python -m uvicorn api.main:app --reload --port 8000
 import time
 import os
 import asyncio
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from fastapi import FastAPI, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse
 # Local imports — no sys.path hacks needed when running via ``python -m``
 from src.video_catalog import get_video_files_cached, find_video_by_id
 from src.inference import service as inference_service
+from src.color_features import extract_color_summary, bhattacharyya_distance, mode_distance, passes_color_mode
 
 DOMAIN_PROMPT_PRESETS = {
     "nature": (
@@ -62,6 +63,29 @@ def _load_index() -> dict:
 def _save_index(data: dict):
     """Save detection results (used only by reindex to clear the file)."""
     inference_service.overwrite_index(data)
+
+
+KNOWN_COLOR_FILTERS = {"any", "warm", "cool", "bright", "dark"}
+
+
+def _ensure_color_summary(video_id: str, video_data: dict[str, Any]) -> Optional[dict[str, Any]]:
+    summary = video_data.get("color_summary")
+    if isinstance(summary, dict) and isinstance(summary.get("hue_hist"), list):
+        return summary
+
+    vpath = find_video_by_id(video_id)
+    if not vpath:
+        return None
+
+    summary = extract_color_summary(vpath)
+    if not summary:
+        return None
+
+    updated = dict(video_data)
+    updated["color_summary"] = summary
+    inference_service.upsert_index_entry(video_id, updated)
+    video_data["color_summary"] = summary
+    return summary
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +212,26 @@ async def query_videos(
 
     normalized_types = [t.lower() for t in types_list]
 
+    color_filter_raw = (color_filter or "any").strip()
+    color_mode = color_filter_raw.lower()
+    reference_video_id: Optional[str] = None
+
+    if color_mode == "same":
+        # Frontend usually sends reference video id directly for "same", but handle this gracefully.
+        color_mode = "any"
+    elif color_mode not in KNOWN_COLOR_FILTERS:
+        reference_video_id = color_filter_raw
+        color_mode = "any"
+
+    reference_summary: Optional[dict[str, Any]] = None
+    if reference_video_id:
+        ref_data = index.get(reference_video_id)
+        if not isinstance(ref_data, dict):
+            raise HTTPException(400, "Invalid color reference video id")
+        reference_summary = _ensure_color_summary(reference_video_id, ref_data)
+        if not reference_summary:
+            raise HTTPException(400, "Reference video has no color summary yet; run detection first")
+
     matching_videos = []
     for video_id, video_data in index.items():
         if not isinstance(video_data, dict):
@@ -207,6 +251,21 @@ async def query_videos(
                 if query_object_normalized in objects_in_frame:
                     segments.append({"start": entry["t"], "end": entry["t"] + 0.5})
 
+        distance = 0.1
+        if reference_summary is not None:
+            current_summary = _ensure_color_summary(video_id, video_data)
+            if not current_summary:
+                continue
+            distance = bhattacharyya_distance(
+                current_summary.get("hue_hist", []),
+                reference_summary.get("hue_hist", []),
+            )
+        elif color_mode != "any":
+            current_summary = _ensure_color_summary(video_id, video_data)
+            if not current_summary or not passes_color_mode(current_summary, color_mode):
+                continue
+            distance = mode_distance(current_summary, color_mode)
+
         video_name = f"{video_id}.mp4"
         vpath = find_video_by_id(video_id)
         if vpath:
@@ -216,11 +275,12 @@ async def query_videos(
             {
                 "id": video_id,
                 "name": video_name,
-                "distance": 0.1,
+                "distance": round(float(distance), 6),
                 "object_segments": segments,
             }
         )
 
+    matching_videos.sort(key=lambda x: float(x.get("distance", 1.0)))
     matching_videos = matching_videos[:k]
     elapsed = time.perf_counter() - t0
 
@@ -500,7 +560,34 @@ def get_video_detections(video_id: str):
     video_data = index.get(video_id)
     if not video_data:
         raise HTTPException(404, "Video not found in index")
-    return video_data
+
+    if not isinstance(video_data, dict):
+        raise HTTPException(404, "Video not found in index")
+
+    try:
+        from src.correction_applier import apply_corrections_to_timeline
+
+        timeline = video_data.get("timeline", [])
+        corrected_timeline = apply_corrections_to_timeline(timeline, video_id=video_id)
+
+        corrected_classes = sorted(
+            {
+                str(obj.get("class", ""))
+                for entry in corrected_timeline
+                for obj in entry.get("objects", [])
+                if obj.get("class")
+            }
+        )
+
+        response = dict(video_data)
+        response["timeline"] = corrected_timeline
+        response["classes"] = corrected_classes
+        response["total_classes"] = len(corrected_classes)
+        response["total_detections"] = len(corrected_timeline)
+        return response
+    except Exception:
+        # If correction application fails, return raw data rather than erroring the endpoint.
+        return video_data
 def detect_status(job_id: str):
     """Get status for a submitted detection job."""
     job = inference_service.get_job(job_id)

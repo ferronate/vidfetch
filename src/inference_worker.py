@@ -10,6 +10,7 @@ from typing import List, Dict, Optional, Tuple
 import logging
 
 from src.detector import VideoDetector
+from src.color_features import extract_color_summary
 
 logger = logging.getLogger(__name__)
 
@@ -99,8 +100,15 @@ def run_detection(
         "total_classes": len(unique_classes),
         "timeline": timeline,
         "total_detections": len(timeline),
-        "prompt": prompt
+        "prompt": prompt,
     }
+
+    try:
+        color_summary = extract_color_summary(video_path)
+        if color_summary:
+            result["color_summary"] = color_summary
+    except Exception as e:
+        logger.debug(f"Color summary extraction failed for {video_path}: {e}")
 
     return result
 

@@ -83,6 +83,7 @@ export function CorrectionReview({ videoId }: CorrectionReviewProps) {
     frameIndex: number;
     detectionIndex: number;
     newClass: string;
+    customClass: string;
   } | null>(null);
   const [newRule, setNewRule] = useState({ pattern: "", target: "", confidence: "" });
   const [showAddRule, setShowAddRule] = useState(false);
@@ -199,7 +200,11 @@ export function CorrectionReview({ videoId }: CorrectionReviewProps) {
                             <Select
                               value={editingDetection.newClass}
                               onValueChange={(v) =>
-                                setEditingDetection({ ...editingDetection, newClass: v })
+                                setEditingDetection({
+                                  ...editingDetection,
+                                  newClass: v,
+                                  customClass: v === "__custom__" ? editingDetection.customClass : "",
+                                })
                               }
                             >
                               <SelectTrigger className="w-40">
@@ -214,14 +219,33 @@ export function CorrectionReview({ videoId }: CorrectionReviewProps) {
                                 <SelectItem value="__custom__">Custom...</SelectItem>
                               </SelectContent>
                             </Select>
+                            {editingDetection.newClass === "__custom__" && (
+                              <input
+                                type="text"
+                                value={editingDetection.customClass}
+                                onChange={(e) =>
+                                  setEditingDetection({
+                                    ...editingDetection,
+                                    customClass: e.target.value,
+                                  })
+                                }
+                                placeholder="Enter custom class"
+                                className="w-40 rounded border border-input bg-background px-2 py-1 text-sm"
+                                autoFocus
+                              />
+                            )}
                             <Button
                               size="sm"
                               onClick={() => {
+                                const targetClass =
+                                  editingDetection.newClass === "__custom__"
+                                    ? editingDetection.customClass.trim()
+                                    : editingDetection.newClass;
                                 if (
-                                  editingDetection.newClass &&
-                                  editingDetection.newClass !== det.class
+                                  targetClass &&
+                                  targetClass !== det.class
                                 ) {
-                                  addCorrection(frameIndex, det, editingDetection.newClass);
+                                  addCorrection(frameIndex, det, targetClass);
                                 }
                                 setEditingDetection(null);
                               }}
@@ -262,6 +286,7 @@ export function CorrectionReview({ videoId }: CorrectionReviewProps) {
                                   frameIndex,
                                   detectionIndex,
                                   newClass: det.class,
+                                  customClass: "",
                                 })
                               }
                             >
