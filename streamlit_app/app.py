@@ -5,7 +5,12 @@ from typing import Any
 
 import streamlit as st
 
-from streamlit_app.api_client import APIError, DEFAULT_API_BASE, VidfetchClient
+try:
+    from streamlit_app.api_client import APIError, DEFAULT_API_BASE, VidfetchClient
+except ModuleNotFoundError:
+    # Streamlit Cloud may execute this file as a script where the package root
+    # is not importable as "streamlit_app".
+    from api_client import APIError, DEFAULT_API_BASE, VidfetchClient
 
 
 st.set_page_config(page_title="Vidfetch", page_icon="🎬", layout="wide")
