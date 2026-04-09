@@ -17,12 +17,12 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional
 
-from src.utils import ROOT
+from src.utils import DATA_DIR
 
 logger = logging.getLogger(__name__)
 
-CORRECTIONS_FILE = ROOT / "data" / "corrections.json"
-LEGACY_SQLITE_FILE = ROOT / "data" / "corrections.db"
+CORRECTIONS_FILE = DATA_DIR / "corrections.json"
+LEGACY_SQLITE_FILE = DATA_DIR / "corrections.db"
 
 
 @dataclass

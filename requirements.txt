@@ -9,3 +9,4 @@ scipy>=1.10.0
 ultralytics>=8.0.0
 py-cpuinfo>=8.0.0
 python-multipart>=0.0.5
+streamlit>=1.33.0

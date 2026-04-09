@@ -18,10 +18,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from src.utils import ROOT, MODELS_DIR
+
 logger = logging.getLogger(__name__)
 
 # Repo root (one level above src/)
-_ROOT = Path(__file__).resolve().parent.parent
+_ROOT = ROOT
 
 
 @dataclass(frozen=True)
@@ -55,43 +57,43 @@ class CPUProfile:
 # ---------------------------------------------------------------------------
 MODEL_REGISTRY = {
     "object365": {
-        "path": "models/yolo11n.pt",  # Updated to available model
+        "path": MODELS_DIR / "yolo11n.pt",  # Updated to available model
         "classes": 80,
         "type": "yolo",
         "description": "YOLO11-nano trained on COCO (80 classes)",
     },
     "coco-nano": {
-        "path": "models/yolov8n.pt",
+        "path": MODELS_DIR / "yolov8n.pt",
         "classes": 80,
         "type": "yolo",
         "description": "YOLOv8-nano trained on COCO (80 classes)",
     },
     "coco-small": {
-        "path": "models/yolov8s.pt",
+        "path": MODELS_DIR / "yolov8s.pt",
         "classes": 80,
         "type": "yolo",
         "description": "YOLOv8-small trained on COCO (80 classes)",
     },
     "world-small": {
-        "path": "models/yolov8s-world.pt",
+        "path": MODELS_DIR / "yolov8s-world.pt",
         "classes": "open",
         "type": "yolo-world",
         "description": "YOLOv8-small World (open-vocabulary)",
     },
     "coco-oiv7-nano": {
-        "path": "models/yolov8n-oiv7.pt",
+        "path": MODELS_DIR / "yolov8n-oiv7.pt",
         "classes": 600,
         "type": "yolo",
         "description": "YOLOv8-nano trained on Open Images V7",
     },
     "onnx-nano": {
-        "path": "models/yolov8n.onnx",
+        "path": MODELS_DIR / "yolov8n.onnx",
         "classes": 80,
         "type": "onnx",
         "description": "YOLOv8-nano ONNX (quantised / CPU-optimised)",
     },
     "onnx-nano-quant": {
-        "path": "models/yolov8n.quant.onnx",
+        "path": MODELS_DIR / "yolov8n.quant.onnx",
         "classes": 80,
         "type": "onnx",
         "description": "YOLOv8-nano ONNX INT8 quantised",
@@ -99,9 +101,10 @@ MODEL_REGISTRY = {
 }
 
 
-def _resolve_model_path(relative: str) -> Path:
+def _resolve_model_path(relative: str | Path) -> Path:
     """Resolve a model path relative to the repo root."""
-    return _ROOT / relative
+    path = Path(relative)
+    return path if path.is_absolute() else _ROOT / path
 
 
 def resolve_model(key: str) -> Path:
@@ -112,7 +115,7 @@ def resolve_model(key: str) -> Path:
 
 def _scan_available_models() -> dict[str, Path]:
     """Scan the models/ directory and return available models keyed by type."""
-    models_dir = _ROOT / "models"
+    models_dir = MODELS_DIR
     if not models_dir.exists():
         return {}
     

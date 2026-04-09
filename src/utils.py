@@ -6,6 +6,7 @@ Import from here instead of duplicating constants or helper functions.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import List, TYPE_CHECKING
 
@@ -21,9 +22,16 @@ VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
 # Repo root (one level above src/)
 ROOT = Path(__file__).resolve().parent.parent
 
-DATA_DIR = ROOT / "data"
-INDEX_DIR = ROOT / "index_store"
-MODELS_DIR = ROOT / "models"
+def _env_path(name: str, default: Path) -> Path:
+    value = os.getenv(name)
+    if not value:
+        return default
+    return Path(value).expanduser().resolve()
+
+
+DATA_DIR = _env_path("VF_DATA_DIR", ROOT / "data")
+INDEX_DIR = _env_path("VF_INDEX_DIR", ROOT / "index_store")
+MODELS_DIR = _env_path("VF_MODELS_DIR", ROOT / "models")
 INDEX_FILE = INDEX_DIR / "detection_results.json"
 
 

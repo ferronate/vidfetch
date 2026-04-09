@@ -9,7 +9,7 @@ import cv2
 from pathlib import Path
 
 from .base import Detector, Detection
-from src.utils import nms
+from src.utils import nms, MODELS_DIR
 from src.cpu_profile import get_cpu_profile
 
 logger = logging.getLogger(__name__)
@@ -41,6 +41,11 @@ class ONNXDetector(Detector):
     ):
         profile = get_cpu_profile()
         self.model_path = Path(model_path)
+        if not self.model_path.is_absolute():
+            if self.model_path.parts and self.model_path.parts[0] == MODELS_DIR.name:
+                self.model_path = MODELS_DIR.parent / self.model_path
+            else:
+                self.model_path = MODELS_DIR / self.model_path
         self.input_size = input_size if input_size is not None else profile.input_size
         self._session = None
         self._input_name = None

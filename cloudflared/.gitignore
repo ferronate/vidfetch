@@ -1,0 +1,5 @@
+config.yml
+*.json
+*.log
+*.pem
+*.crt

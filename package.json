@@ -1,4 +1,9 @@
 {
+  "scripts": {
+    "start:api": "python -m uvicorn api.main:app --reload --port 8000",
+    "start:streamlit": "streamlit run streamlit_app/app.py --server.port 8501",
+    "start:ui": "streamlit run streamlit_app/app.py --server.port 8501"
+  },
   "devDependencies": {
     "shadcn": "^4.1.2"
   }

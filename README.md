@@ -1,6 +1,6 @@
 # vidfetch
 
-Lightweight video object detection with comprehensive video-specific features and an intuitive web UI for search, detection, and correction workflows.
+Lightweight video object detection with a Streamlit UI for search, detection, and correction workflows.
 
 ## Features
 
@@ -19,8 +19,8 @@ Lightweight video object detection with comprehensive video-specific features an
 - ✅ **Fast Index-Backed Queries** - Returns results in milliseconds using a persistent detection index.
 - ✅ **Detection Reuse** - Automatically reuses existing detections instead of re-running jobs on already-indexed videos.
 
-### Web UI & Workflows
-- ✅ **Modern UI** - Built with Next.js 16, Tailwind CSS v4, and shadcn/ui components.
+### UI & Workflows
+- ✅ **Modern UI** - Built with Streamlit for a simple local-first app experience.
 - ✅ **Video Gallery** - Browse, select, and manage videos with live detection status.
 - ✅ **Detection Control** - Run detection on a single video or batch-process all videos with live progress tracking.
 - ✅ **Review & Correction Tab** - Inspect detections frame-by-frame with per-class time-range summaries.
@@ -53,40 +53,75 @@ The backend automatically schedules background indexing for any new videos found
 python -m uvicorn api.main:app --reload --port 8000
 ```
 
-### 4. Start the Frontend UI
-The modern Web UI runs on port 3000 and connects to the backend at `http://localhost:8000`.
+### 4. Start the Streamlit UI
+The Streamlit frontend runs on port 8501 and connects to the backend at `http://localhost:8000`.
 ```bash
-cd web
-pnpm install  # or: npm install
-pnpm dev      # or: npm run dev
+streamlit run streamlit_app/app.py --server.port 8501
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser.
+Open [http://localhost:8501](http://localhost:8501) in your browser.
+
+### Legacy Next.js Folder (Non-Interfering)
+The `web/` folder is kept only as a legacy reference.
+
+- The active UI is `streamlit_app/`.
+- The default startup flow does not use `web/`.
+- You can safely ignore `web/` unless you intentionally want to maintain old React code.
+
+### 5. Local Backend Host + Public URL
+If you want the backend and data to stay on this machine but still be reachable from elsewhere, keep the backend local and expose the Streamlit app through a public URL.
+
+Minimal setup:
+1. Start the backend on this machine with `uvicorn` bound to `127.0.0.1` or `0.0.0.0`.
+2. Keep `data/`, `index_store/`, and `models/` on this machine.
+3. Run the Streamlit app locally on port 8501 so it can call the backend on `localhost`.
+4. Expose the Streamlit app via a tunnel or reverse proxy if you want remote access.
+
+Example backend env values are in [/.env.example](.env.example), and the Streamlit app uses [streamlit_app/.env.example](streamlit_app/.env.example).
+
+If you use port forwarding + DNS, the usual layout is:
+```text
+public DNS name -> router public IP -> forwarded port 443 -> reverse proxy -> localhost:8501
+```
+
+If your ISP uses CGNAT or your IP changes frequently, use a tunnel instead of direct port forwarding.
+
+### Cloudflare Tunnel (Windows)
+
+This repository includes a `cloudflared/` folder with a template config and Windows PowerShell scripts for a local Streamlit app and backend that stay on this machine.
+
+Recommended flow:
+1. Install `cloudflared` and authenticate with Cloudflare.
+2. Create a named tunnel for this machine.
+3. Copy `cloudflared/config.example.yml` to `cloudflared/config.yml` and fill in the tunnel UUID plus your public hostname.
+4. Start the backend on `localhost:8000` and the Streamlit app on `localhost:8501`.
+5. Run `cloudflared/run-tunnel.ps1` to publish the Streamlit app.
+
+The Streamlit app talks to the local backend over `http://localhost:8000`, so you do not need to expose the API publicly unless you want external API clients.
 
 ---
 
-## Using the Web UI
+## Using the Streamlit UI
 
 ### Search for Objects
-1. Click the **Filter** button to open the filter panel.
-2. Select object types (e.g., "Person", "Car", "Building") and/or choose a color characteristic.
-3. Click **Apply Filters** to refine the search.
-4. Enter an object name in the search field (e.g., "person", "dog") and click **Fetch** to query.
+1. Open the **Search** page from the sidebar.
+2. Select object types (e.g., "person", "car", "building") and/or choose a color characteristic.
+3. Enter object names in the search field or use the quick type filters.
+4. Click **Search** to query the backend.
 5. Results show matching video segments sorted by relevance.
 
 ### Detect Objects in Videos
-1. Browse the **Gallery** section and check the video(s) you want to analyze.
-2. Click **Detect selected** to run detection on one video, or **Detect all** for batch processing.
-3. Monitor the progress bar as the backend indexes detections.
+1. Open **Gallery & Detect** from the sidebar.
+2. Pick a video from the sidebar selector.
+3. Click **Run detection** to start analysis for that clip.
 4. Existing detections are automatically reused to avoid redundant re-processing.
 
 ### Review & Correct Detections
-1. In the **Gallery**, click the **Review** button on any video card.
-2. View **Object time ranges** at the top showing per-class temporal windows (e.g., "person: 0.4s-6.2s, 10.1s-12.5s").
-3. Scroll through the timeline to inspect each detection.
-4. Use **Relabel** to correct a mislabeled object, or **Delete** to remove false positives.
-5. Switch to the **Corrections** tab to view all changes made to this video.
-6. Use **Rules** tab to create reusable patterns (e.g., auto-relabel "dog" → "pet").
+1. Open **Review & Corrections** from the sidebar.
+2. Select the video you want to inspect.
+3. Use the review tab to choose a detection and relabel it or delete it.
+4. Use the corrections tab to inspect and remove saved corrections.
+5. Use the rules tab to create reusable patterns (e.g., auto-relabel "dog" → "pet").
 
 ---
 
